@@ -5,76 +5,134 @@ provides a number of simple HTTP/2 endpoints to play with.
 """
 import asyncio
 import logging
+import signal
+from argparse import ArgumentParser
+from sys import stderr
 
 from asynch2 import create_connection
 
 
+HOST = 'http2.golang.org'
+
+
+def _print_headers(headers):
+    for k, v in headers:
+        print(f'{k.decode()}:\t{v.decode()}')
+
+
+def print_headers(headers):
+    print('∨∨∨∨ HEADERS ∨∨∨∨')
+    _print_headers(headers)
+    print('∧∧∧∧ HEADERS ∧∧∧∧')
+
+
+def print_data(data):
+    print('∨∨∨∨ DATA ∨∨∨∨')
+    print(data.decode())
+    print('∧∧∧∧ DATA ∧∧∧∧')
+
+
+def print_trailers(trailers):
+    print('∨∨∨∨ TRAILERS ∨∨∨∨')
+    _print_headers(trailers)
+    print('∧∧∧∧ TRAILERS ∧∧∧∧')
+
+
 async def clockstream(http2):
-    stream_id = http2.request(
+    stream_id = await http2.send_request(
         'GET',
         'https',
-        host,
+        HOST,
         '/clockstream',
         end_stream=True,
     )
-    response = await http2.read_response(stream_id)
 
-    print()
-    print('response:')
-    print(response)
-    print()
+    response = await http2.read_headers(stream_id)
+    print_headers(response)
+
+    signal.signal(
+        signal.SIGINT,
+        lambda s, f: asyncio.ensure_future(http2.reset_stream(stream_id)),
+    )
+
+    print('∨∨∨∨ DATA ∨∨∨∨')
+    async for frame in http2.stream_frames(stream_id):
+        print(frame.decode(), end='')
 
 
-async def echo(http2):
-    stream_id = http2.request('PUT', 'https', host, '/ECHO')
-    http2.send_data(stream_id, b'hello world', end_stream=True)
-    response = await http2.read_response(stream_id)
-    data = await http2.read(stream_id)
+async def echo(http2, data):
+    stream_id = await http2.send_request('PUT', 'https', HOST, '/ECHO')
+    await http2.send_data(stream_id, data, end_stream=True)
 
-    print()
-    print('response:')
-    print(response)
-    print('data:')
-    print(data.decode())
-    print()
+    response = await http2.read_headers(stream_id)
+    print_headers(response)
+    data = await http2.read_data(stream_id)
+    print_data(data)
+    trailers = await http2.read_trailers(stream_id)
+    print_trailers(trailers)
 
 
 async def reqinfo(http2):
-    stream_id = http2.request(
+    stream_id = await http2.send_request(
         'GET',
         'https',
-        host,
+        HOST,
         '/reqinfo',
         additional_headers=[('foo', 'bar')],
         end_stream=True,
     )
-    response = await http2.read_response(stream_id)
-    data = await http2.read(stream_id)
 
-    print()
-    print('response:')
-    print(response)
-    print('data:')
-    print(data.decode())
-    print()
+    response = await http2.read_headers(stream_id)
+    print_headers(response)
+    data = await http2.read_data(stream_id)
+    print_data(data)
+    trailers = await http2.read_trailers(stream_id)
+    print_trailers(trailers)
 
 
-async def main(http2):
-    await reqinfo(http2)
-    await echo(http2)
-    await clockstream(http2)
+async def main(args, loop):
+    http2 = await create_connection(HOST, 443, loop=loop, server_hostname=HOST)
+
+    if args.endpoint == 'clockstream':
+        await clockstream(http2)
+    elif args.endpoint == 'echo':
+        if not args.input:
+            print('Input is required for echo', file=stderr)
+            return
+        await echo(http2, args.input.encode())
+    elif args.endpoint == 'reqinfo':
+        await reqinfo(http2)
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    host = 'http2.golang.org'
+    parser = ArgumentParser()
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        action='store_true',
+        help='display debug output',
+    )
+    parser.add_argument(
+        'endpoint',
+        nargs='?',
+        default='reqinfo',
+        type=str,
+        choices=['clockstream', 'echo', 'reqinfo'],
+        help='demo endpoint to use',
+    )
+    parser.add_argument(
+        'input',
+        nargs='?',
+        default=None,
+        type=str,
+        help='input to send to echo endpoint'
+    )
+
+    args = parser.parse_args()
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
 
     loop = asyncio.get_event_loop()
-    http2 = loop.run_until_complete(
-        create_connection(host, 443, server_hostname=host),
-    )
-    asyncio.ensure_future(main(http2), loop=loop)
-    try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        pass
+    loop.run_until_complete(main(args, loop))
