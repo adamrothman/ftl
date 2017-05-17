@@ -150,7 +150,6 @@ class HTTP2Connection(asyncio.Protocol):
         frame size, it will be broken into several frames as appropriate.
         """
         max_frame_size = self._h2.max_outbound_frame_size
-        data_size = len(data)
 
         if isinstance(max_frame_size, int) and len(data) > max_frame_size:
             frames = list(chunks(data, max_frame_size))
@@ -161,10 +160,10 @@ class HTTP2Connection(asyncio.Protocol):
         for i, frame in enumerate(frames):
             await asyncio.gather(
                 self.writable(),
-                self.window_open(stream_id, size=data_size),
+                self.window_open(stream_id, size=len(frame)),
             )
             end = (end_stream is True and i == frame_count - 1)
-            self._h2.send_data(stream_id, data, end_stream=end)
+            self._h2.send_data(stream_id, frame, end_stream=end)
             self._flush()
 
     # Receive
