@@ -55,8 +55,9 @@ class HTTP2Stream:
     # Getters
 
     async def read_frame(self):
-        await self._data_frames_available.wait()
         frame = b''
+        if len(self._data_frames) == 0 and not self._closed:
+            await self._data_frames_available.wait()
         if len(self._data_frames) > 0:
             frame = self._data_frames.popleft()
         if len(self._data_frames) == 0 and not self.closed:
