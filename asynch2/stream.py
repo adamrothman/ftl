@@ -56,7 +56,7 @@ class HTTP2Stream:
 
     async def read_frame(self):
         frame = b''
-        if len(self._data_frames) == 0 and not self._closed:
+        if len(self._data_frames) == 0 and not self.closed:
             await self._data_frames_available.wait()
         if len(self._data_frames) > 0:
             frame = self._data_frames.popleft()
@@ -64,12 +64,23 @@ class HTTP2Stream:
             self._data_frames_available.clear()
         return frame
 
+    async def read_frames(self):
+        frames = []
+        if len(self._data_frames) == 0 and not self.closed:
+            await self._data_frames_available.wait()
+        if len(self._data_frames) > 0:
+            frames.extend(self._data_frames)
+            self._data_frames.clear()
+        if len(self._data_frames) == 0 and not self.closed:
+            self._data_frames_available.clear()
+        return frames
+
     async def read(self):
         frames = []
         while True:
-            frame = await self.read_frame()
-            if frame:
-                frames.append(frame)
+            _frames = await self.read_frames()
+            if _frames:
+                frames.extend(_frames)
             elif self.closed:
                 break
         return b''.join(frames)
