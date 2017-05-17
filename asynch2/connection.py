@@ -99,6 +99,11 @@ class HTTP2Connection(asyncio.Protocol):
 
     # Flow control
 
+    async def _update_window(self, increment, stream_id=None):
+        await self.writable()
+        self._h2.increment_flow_control_window(increment, stream_id=stream_id)
+        self._flush()
+
     def _window_open(self, stream_id, size=None):
         if not isinstance(size, int) or size <= 0:
             size = 0

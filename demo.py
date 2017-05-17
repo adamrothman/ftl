@@ -60,6 +60,18 @@ async def clockstream(http2):
         print(frame.decode(), end='')
 
 
+async def crc32(http2):
+    stream_id = await http2.send_request('PUT', 'https', HOST, '/crc32')
+    await http2.send_data(stream_id, b'blah blah blah', end_stream=True)
+
+    response = await http2.read_headers(stream_id)
+    print_headers(response)
+    data = await http2.read_data(stream_id)
+    print_data(data)
+    trailers = await http2.read_trailers(stream_id)
+    print_trailers(trailers)
+
+
 async def echo(http2, data):
     stream_id = await http2.send_request('PUT', 'https', HOST, '/ECHO')
     await http2.send_data(stream_id, data, end_stream=True)
@@ -95,6 +107,8 @@ async def main(args, loop):
 
     if args.endpoint == 'clockstream':
         await clockstream(http2)
+    elif args.endpoint == 'crc32':
+        await crc32(http2)
     elif args.endpoint == 'echo':
         if not args.input:
             print('Input is required for echo', file=stderr)
@@ -117,7 +131,7 @@ if __name__ == '__main__':
         nargs='?',
         default='reqinfo',
         type=str,
-        choices=['clockstream', 'echo', 'reqinfo'],
+        choices=['clockstream', 'crc32', 'echo', 'reqinfo'],
         help='demo endpoint to use',
     )
     parser.add_argument(
@@ -125,7 +139,7 @@ if __name__ == '__main__':
         nargs='?',
         default=None,
         type=str,
-        help='input to send to echo endpoint'
+        help='input for endpoints that require it',
     )
 
     args = parser.parse_args()
@@ -133,6 +147,7 @@ if __name__ == '__main__':
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO)
+    logging.getLogger('hpack.hpack').setLevel(logging.WARNING)
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main(args, loop))

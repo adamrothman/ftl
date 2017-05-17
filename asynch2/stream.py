@@ -24,7 +24,7 @@ class AsyncFrameIterator:
 
     async def __anext__(self):
         frame = await self.stream.read_frame()
-        if self.stream.closed and not frame:
+        if not frame and self.stream.closed:
             raise StopAsyncIteration
         else:
             return frame
@@ -93,13 +93,7 @@ class HTTP2Stream:
         """Reads all of the stream's data, until it is closed. If it's never
         closed, this never returns.
         """
-        frames = []
-        while True:
-            _frames = await self.read_frames()
-            if _frames:
-                frames.extend(_frames)
-            elif self.closed:
-                break
+        frames = [f async for f in self.stream_frames()]
         return b''.join(frames)
 
     async def read_frame(self) -> bytes:
@@ -109,6 +103,8 @@ class HTTP2Stream:
         returned immediately. If the stream is open and no frames remain, waits
         for a new frame to arrive. If the stream is closed and no frames
         remain, returns an empty bytes object.
+
+        TODO: Send flow control window updates as data is consumed
         """
         frame = b''
         if len(self._data_frames) == 0 and not self.closed:
@@ -118,22 +114,6 @@ class HTTP2Stream:
         if len(self._data_frames) == 0 and not self.closed:
             self._data_frames_available.clear()
         return frame
-
-    async def read_frames(self) -> List[bytes]:
-        """Read all available frames.
-
-        Similar to `read_frame`, except that all available frames in the buffer
-        are returned as a list.
-        """
-        frames = []
-        if len(self._data_frames) == 0 and not self.closed:
-            await self._data_frames_available.wait()
-        if len(self._data_frames) > 0:
-            frames.extend(self._data_frames)
-            self._data_frames.clear()
-        if len(self._data_frames) == 0 and not self.closed:
-            self._data_frames_available.clear()
-        return frames
 
     async def read_headers(self) -> Headers:
         return await self._headers
