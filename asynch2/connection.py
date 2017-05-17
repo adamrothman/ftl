@@ -186,7 +186,8 @@ class HTTP2Connection(asyncio.Protocol):
 
     # Connection management
 
-    def close(self):
+    async def close(self):
+        await self.writable()
         self._h2.close_connection()
         self._flush()
 
