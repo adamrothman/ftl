@@ -120,11 +120,11 @@ class HTTP2Connection(asyncio.Protocol):
             logger.debug('Settings acknowledged')
         elif t == h2.events.StreamEnded:
             stream = self._get_stream(event.stream_id)
-            stream.receive_end()
+            stream.close()
             self._stream_creatable.update()
         elif t == h2.events.StreamReset:
             stream = self._get_stream(event.stream_id)
-            stream.window_open.set()
+            stream.close()
             self._stream_creatable.update()
         elif t == h2.events.TrailersReceived:
             stream = self._get_stream(event.stream_id)

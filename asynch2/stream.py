@@ -21,6 +21,7 @@ class HTTP2Stream:
         loop = loop or asyncio.get_event_loop()
 
         self._id = stream_id
+        self._closed = False
 
         self._window_open = asyncio.Event(loop=loop)
 
@@ -29,8 +30,6 @@ class HTTP2Stream:
 
         self._headers = asyncio.Future(loop=loop)
         self._trailers = asyncio.Future(loop=loop)
-
-        self._closed = False
 
     @property
     def id(self) -> int:
@@ -48,6 +47,7 @@ class HTTP2Stream:
         if self.closed:
             return
         self._closed = True
+        self._window_open.clear()
         self._data_frames_available.set()
         if not self._trailers.done():
             self._trailers.set_result(MultiDict())
@@ -67,9 +67,6 @@ class HTTP2Stream:
 
     def receive_trailers(self, trailers: List[Tuple[str, str]]):
         self._trailers.set_result(MultiDict(trailers))
-
-    def receive_end(self):
-        self.close()
 
     # Readers
 
