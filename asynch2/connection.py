@@ -6,8 +6,10 @@ import h2.events
 from h2.config import H2Configuration
 from h2.connection import H2Connection
 from h2.errors import ErrorCodes
+from h2.settings import SettingCodes
 
 from asynch2.stream import HTTP2Stream
+from asynch2.utils import ConditionalEvent
 
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,18 @@ class HTTP2Connection(asyncio.Protocol):
             ),
         )
         self._streams = {}
+
         self._transport = None
-        self._writable = asyncio.Event(loop=loop)
+        self._paused = True
+
+        self._writable = ConditionalEvent(
+            lambda: not self._paused,
+            loop=loop,
+        )
+        self._stream_creatable = ConditionalEvent(
+            self._can_create_stream,
+            loop=loop,
+        )
 
     # asyncio.Protocol callbacks
 
@@ -65,17 +77,25 @@ class HTTP2Connection(asyncio.Protocol):
         events = self._h2.receive_data(data)
         for event in events:
             self._event_received(event)
+        self._flush()
 
     def eof_received(self):
         self.close()
 
     def pause_writing(self):
-        self._writable.clear()
+        self._paused = True
+        self._writable.update()
 
     def resume_writing(self):
-        self._writable.set()
+        self._paused = False
+        self._writable.update()
 
     # Internal helpers
+
+    def _can_create_stream(self):
+        current = self._h2.open_outbound_streams
+        limit = self._h2.remote_settings.max_concurrent_streams
+        return current < limit
 
     def _event_received(self, event):
         t = type(event)
@@ -86,18 +106,26 @@ class HTTP2Connection(asyncio.Protocol):
             self._transport.close()
         elif t == h2.events.DataReceived:
             stream = self._get_stream(event.stream_id)
-            stream.receive_data(event.data)
+            stream.receive_data(event.data, event.flow_controlled_length)
         elif t == h2.events.ResponseReceived:
             stream = self._get_stream(event.stream_id)
             stream.receive_headers(event.headers)
         elif t == h2.events.RemoteSettingsChanged:
-            logger.info('Remote settings changed')
+            if SettingCodes.INITIAL_WINDOW_SIZE in event.changed_settings:
+                for stream in self._streams.values():
+                    stream.window_open.set()
+            if SettingCodes.MAX_CONCURRENT_STREAMS in event.changed_settings:
+                self._stream_creatable.update()
         elif t == h2.events.SettingsAcknowledged:
             logger.debug('Settings acknowledged')
-            # TODO: Handle new settings if necessary
         elif t == h2.events.StreamEnded:
             stream = self._get_stream(event.stream_id)
             stream.receive_end()
+            self._stream_creatable.update()
+        elif t == h2.events.StreamReset:
+            stream = self._get_stream(event.stream_id)
+            stream.window_open.set()
+            self._stream_creatable.update()
         elif t == h2.events.TrailersReceived:
             stream = self._get_stream(event.stream_id)
             stream.receive_trailers(event.headers)
@@ -111,7 +139,7 @@ class HTTP2Connection(asyncio.Protocol):
                 stream = self._get_stream(event.stream_id)
                 stream.window_open.set()
         else:
-            logger.info(f'Unhandled event received: {event}')
+            logger.warning(f'Unhandled event received: {event}')
 
     def _flush(self):
         data = self._h2.data_to_send()
@@ -124,11 +152,6 @@ class HTTP2Connection(asyncio.Protocol):
         return self._streams[stream_id]
 
     # Flow control
-
-    async def _update_window(self, increment, stream_id=None):
-        await self._writable.wait()
-        self._h2.increment_flow_control_window(increment, stream_id=stream_id)
-        self._flush()
 
     async def _window_open(self, stream_id):
         """Wait until the identified stream's flow control window is open.
@@ -156,7 +179,10 @@ class HTTP2Connection(asyncio.Protocol):
         if additional_headers is not None:
             headers.extend(additional_headers)
 
-        await self._writable.wait()
+        await asyncio.gather(
+            self._writable.wait(),
+            self._stream_creatable.wait(),
+        )
         stream_id = self._h2.get_next_available_stream_id()
         self._h2.send_headers(stream_id, headers, end_stream=end_stream)
         self._flush()
@@ -203,22 +229,25 @@ class HTTP2Connection(asyncio.Protocol):
 
     async def read_data(self, stream_id: int) -> bytes:
         """Read data from the specified stream until it is closed by the remote
-        peer. Never returns if the stream never ends.
+        peer. If the stream is never ended, this never returns.
         """
         frames = [f async for f in self.stream_frames(stream_id)]
         return b''.join(frames)
 
-    async def read_frame(self, stream_id):
+    async def read_frame(self, stream_id) -> bytes:
         """Read a single frame of data from the specified stream. If the stream
         is closed and no frames remain in its buffer, returns an empty bytes
         object.
         """
         stream = self._get_stream(stream_id)
         frame = await stream.read_frame()
-        size = len(frame)
-        if size > 0 and not stream.closed:
-            await self._update_window(size, stream_id=stream_id)
-        return frame
+        if frame.flow_controlled_length > 0:
+            self._h2.acknowledge_received_data(
+                frame.flow_controlled_length,
+                stream_id,
+            )
+            self._flush()
+        return frame.data
 
     async def read_headers(self, stream_id):
         stream = self._get_stream(stream_id)
