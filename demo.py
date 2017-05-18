@@ -23,19 +23,19 @@ def _print_headers(headers):
 def print_headers(headers):
     print('∨∨∨∨ HEADERS ∨∨∨∨')
     _print_headers(headers)
-    print('∧∧∧∧ HEADERS ∧∧∧∧')
+    print('∧∧∧∧ HEADERS ∧∧∧∧\n')
 
 
 def print_data(data):
     print('∨∨∨∨ DATA ∨∨∨∨')
     print(data.decode())
-    print('∧∧∧∧ DATA ∧∧∧∧')
+    print('∧∧∧∧ DATA ∧∧∧∧\n')
 
 
 def print_trailers(trailers):
     print('∨∨∨∨ TRAILERS ∨∨∨∨')
     _print_headers(trailers)
-    print('∧∧∧∧ TRAILERS ∧∧∧∧')
+    print('∧∧∧∧ TRAILERS ∧∧∧∧\n')
 
 
 async def clockstream(http2):
@@ -58,6 +58,7 @@ async def clockstream(http2):
     print('∨∨∨∨ DATA ∨∨∨∨')
     async for frame in http2.stream_frames(stream_id):
         print(frame.decode(), end='')
+    print('∧∧∧∧ DATA ∧∧∧∧\n')
 
 
 async def crc32(http2, data):
@@ -147,7 +148,7 @@ if __name__ == '__main__':
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.WARNING)
     logging.getLogger('hpack.hpack').setLevel(logging.WARNING)
 
     loop = asyncio.get_event_loop()

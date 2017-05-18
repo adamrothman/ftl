@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import ssl
+from asyncio import Event
 
 
 def get_ssl_context() -> ssl.SSLContext:
@@ -35,3 +36,26 @@ def get_ssl_context() -> ssl.SSLContext:
         pass
 
     return ctx
+
+
+class ConditionalEvent(Event):
+
+    def __init__(self, predicate, *, loop=None):
+        super().__init__(loop=loop)
+        self._predicate = predicate
+
+    def is_set(self):
+        self.update()
+        return super().is_set()
+
+    async def wait(self):
+        while not self.update():
+            await super().wait()
+
+    def update(self):
+        result = self._predicate()
+        if result:
+            self.set()
+        else:
+            self.clear()
+        return result

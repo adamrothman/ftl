@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from collections import deque
+from collections import namedtuple
 from typing import List
 from typing import Tuple
 
@@ -9,6 +10,9 @@ from multidict import MultiDict
 
 
 logger = logging.getLogger(__name__)
+
+
+DataFrame = namedtuple('DataFrame', ('data', 'flow_controlled_length'))
 
 
 class HTTP2Stream:
@@ -53,10 +57,13 @@ class HTTP2Stream:
     def receive_headers(self, headers: List[Tuple[str, str]]):
         self._headers.set_result(MultiDict(headers))
 
-    def receive_data(self, data: bytes):
-        if data:
-            self._data_frames.append(data)
-            self._data_frames_available.set()
+    def receive_data(self, data: bytes, flow_controlled_length: int):
+        frame = DataFrame(
+            data=data,
+            flow_controlled_length=flow_controlled_length,
+        )
+        self._data_frames.append(frame)
+        self._data_frames_available.set()
 
     def receive_trailers(self, trailers: List[Tuple[str, str]]):
         self._trailers.set_result(MultiDict(trailers))
@@ -66,7 +73,7 @@ class HTTP2Stream:
 
     # Readers
 
-    async def read_frame(self) -> bytes:
+    async def read_frame(self) -> DataFrame:
         """Read a single frame.
 
         If unconsumed frames remain in the stream's buffer, the first one is
@@ -74,7 +81,7 @@ class HTTP2Stream:
         for a new frame to arrive. If the stream is closed and no frames
         remain, returns an empty bytes object.
         """
-        frame = b''
+        frame = DataFrame(data=b'', flow_controlled_length=0)
         if len(self._data_frames) == 0 and not self.closed:
             await self._data_frames_available.wait()
         if len(self._data_frames) > 0:
