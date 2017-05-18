@@ -7,7 +7,7 @@ import asyncio
 import logging
 import signal
 from argparse import ArgumentParser
-from sys import stderr
+from pathlib import Path
 
 from asynch2 import create_connection
 
@@ -16,8 +16,8 @@ HOST = 'http2.golang.org'
 
 
 def _print_headers(headers):
-    for k, v in headers:
-        print(f'{k.decode()}:\t{v.decode()}')
+    for k, v in headers.items():
+        print(f'{k}:\t{v}')
 
 
 def print_headers(headers):
@@ -60,9 +60,9 @@ async def clockstream(http2):
         print(frame.decode(), end='')
 
 
-async def crc32(http2):
+async def crc32(http2, data):
     stream_id = await http2.send_request('PUT', 'https', HOST, '/crc32')
-    await http2.send_data(stream_id, b'blah blah blah', end_stream=True)
+    await http2.send_data(stream_id, data, end_stream=True)
 
     response = await http2.read_headers(stream_id)
     print_headers(response)
@@ -103,17 +103,18 @@ async def reqinfo(http2):
 
 
 async def main(args, loop):
-    http2 = await create_connection(HOST, 443, loop=loop, server_hostname=HOST)
+    http2 = await create_connection(HOST, 443, loop=loop)
 
     if args.endpoint == 'clockstream':
         await clockstream(http2)
     elif args.endpoint == 'crc32':
-        await crc32(http2)
+        path = Path(args.input).expanduser()
+        with path.open(mode='rb') as f:
+            data = f.read()
+        await crc32(http2, data)
     elif args.endpoint == 'echo':
-        if not args.input:
-            print('Input is required for echo', file=stderr)
-            return
-        await echo(http2, args.input.encode())
+        data = args.input.encode()
+        await echo(http2, data)
     elif args.endpoint == 'reqinfo':
         await reqinfo(http2)
 

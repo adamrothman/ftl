@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
 import ssl
-from typing import Iterator
-from typing import Sequence
-from typing import TypeVar
-
-
-T = TypeVar('T')
-
-
-def chunks(iterable: Sequence[T], n: int) -> Iterator[Sequence[T]]:
-    for i in range(0, len(iterable), n):
-        yield iterable[i:i + n]
 
 
 def get_ssl_context() -> ssl.SSLContext:

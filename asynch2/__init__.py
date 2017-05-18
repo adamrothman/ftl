@@ -9,12 +9,11 @@ async def create_connection(host, port, *, loop=None, **kwargs):
     """Open an HTTP/2 connection to the specified host/port.
     """
     loop = loop or asyncio.get_event_loop()
-    connection = HTTP2Connection(loop=loop, client_side=True)
+    connection = HTTP2Connection(loop=loop, client_side=True, **kwargs)
     await loop.create_connection(
         lambda: connection,
         host=host,
         port=port,
         ssl=get_ssl_context(),
-        **kwargs,
     )
     return connection

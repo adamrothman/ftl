@@ -5,29 +5,10 @@ from collections import deque
 from typing import List
 from typing import Tuple
 
+from multidict import MultiDict
+
 
 logger = logging.getLogger(__name__)
-
-
-Headers = List[Tuple[bytes, bytes]]
-
-
-class AsyncFrameIterator:
-    """Async iterator for an HTTP2Stream's data frames.
-    """
-
-    def __init__(self, stream):
-        self.stream = stream
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        frame = await self.stream.read_frame()
-        if not frame and self.stream.closed:
-            raise StopAsyncIteration
-        else:
-            return frame
 
 
 class HTTP2Stream:
@@ -37,7 +18,7 @@ class HTTP2Stream:
 
         self._id = stream_id
 
-        self._window_condition = asyncio.Condition(loop=loop)
+        self._window_open = asyncio.Event(loop=loop)
 
         self._data_frames = deque()
         self._data_frames_available = asyncio.Event(loop=loop)
@@ -52,8 +33,8 @@ class HTTP2Stream:
         return self._id
 
     @property
-    def window_condition(self) -> asyncio.Condition:
-        return self._window_condition
+    def window_open(self) -> asyncio.Event:
+        return self._window_open
 
     @property
     def closed(self) -> bool:
@@ -65,36 +46,25 @@ class HTTP2Stream:
         self._closed = True
         self._data_frames_available.set()
         if not self._trailers.done():
-            self._trailers.set_result([])
+            self._trailers.set_result(MultiDict())
 
     # Input methods called by HTTP2Protocol
 
-    def receive_headers(self, headers: Headers):
-        logger.debug(f'[{self.id}] Received headers')
-        self._headers.set_result(headers)
+    def receive_headers(self, headers: List[Tuple[str, str]]):
+        self._headers.set_result(MultiDict(headers))
 
     def receive_data(self, data: bytes):
-        logger.debug(f'[{self.id}] Received data')
         if data:
             self._data_frames.append(data)
             self._data_frames_available.set()
 
-    def receive_trailers(self, headers: Headers):
-        logger.debug(f'[{self.id}] Received trailers')
-        self._trailers.set_result(headers)
+    def receive_trailers(self, trailers: List[Tuple[str, str]]):
+        self._trailers.set_result(MultiDict(trailers))
 
     def receive_end(self):
-        logger.debug(f'[{self.id}] Received end')
         self.close()
 
     # Readers
-
-    async def read(self) -> bytes:
-        """Reads all of the stream's data, until it is closed. If it's never
-        closed, this never returns.
-        """
-        frames = [f async for f in self.stream_frames()]
-        return b''.join(frames)
 
     async def read_frame(self) -> bytes:
         """Read a single frame.
@@ -103,8 +73,6 @@ class HTTP2Stream:
         returned immediately. If the stream is open and no frames remain, waits
         for a new frame to arrive. If the stream is closed and no frames
         remain, returns an empty bytes object.
-
-        TODO: Send flow control window updates as data is consumed
         """
         frame = b''
         if len(self._data_frames) == 0 and not self.closed:
@@ -115,16 +83,8 @@ class HTTP2Stream:
             self._data_frames_available.clear()
         return frame
 
-    async def read_headers(self) -> Headers:
+    async def read_headers(self) -> MultiDict:
         return await self._headers
 
-    async def read_trailers(self) -> Headers:
+    async def read_trailers(self) -> MultiDict:
         return await self._trailers
-
-    # Streaming
-
-    def stream_frames(self):
-        """Returns an asynchronous iterator over the incoming data frames
-        suitable for use with an "async for" loop.
-        """
-        return AsyncFrameIterator(self)

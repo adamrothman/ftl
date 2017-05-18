@@ -12,6 +12,7 @@ setup(
 
     install_requires=[
         'h2',
+        'multidict',
     ],
 
     author='Adam Rothman',

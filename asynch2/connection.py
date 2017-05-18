@@ -8,20 +8,41 @@ from h2.connection import H2Connection
 from h2.errors import ErrorCodes
 
 from asynch2.stream import HTTP2Stream
-from asynch2.utils import chunks
 
 
 logger = logging.getLogger(__name__)
 
 
+class AsyncFrameIterator:
+    """Async iterator for an HTTP2Stream's data frames.
+    """
+
+    def __init__(self, connection, stream_id):
+        self.connection = connection
+        self.stream = connection._get_stream(stream_id)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        frame = await self.connection.read_frame(self.stream.id)
+        if not frame and self.stream.closed:
+            raise StopAsyncIteration
+        else:
+            return frame
+
+
 class HTTP2Connection(asyncio.Protocol):
 
-    def __init__(self, *, loop=None, client_side=False):
+    def __init__(self, *, loop=None, client_side=True):
         loop = loop or asyncio.get_event_loop()
         self.loop = loop
 
         self._h2 = H2Connection(
-            config=H2Configuration(client_side=client_side),
+            config=H2Configuration(
+                client_side=client_side,
+                header_encoding='utf-8',
+            ),
         )
         self._streams = {}
         self._transport = None
@@ -81,9 +102,14 @@ class HTTP2Connection(asyncio.Protocol):
             stream = self._get_stream(event.stream_id)
             stream.receive_trailers(event.headers)
         elif t == h2.events.WindowUpdated:
-            logger.debug(
-                f'Stream [{event.stream_id}] window update: {event.delta}'
-            )
+            if event.stream_id == 0:
+                # Connection window updated
+                for stream in self._streams.values():
+                    stream.window_open.set()
+            else:
+                # Stream window updated
+                stream = self._get_stream(event.stream_id)
+                stream.window_open.set()
         else:
             logger.info(f'Unhandled event received: {event}')
 
@@ -100,27 +126,15 @@ class HTTP2Connection(asyncio.Protocol):
     # Flow control
 
     async def _update_window(self, increment, stream_id=None):
-        await self.writable()
+        await self._writable.wait()
         self._h2.increment_flow_control_window(increment, stream_id=stream_id)
         self._flush()
 
-    def _window_open(self, stream_id, size=None):
-        if not isinstance(size, int) or size <= 0:
-            size = 0
-        return self._h2.local_flow_control_window(stream_id) > size
-
-    async def window_open(self, stream_id, size=None):
-        """Wait until the identified stream's flow control window is large
-        enough to accomodate data of the given size (or open at all if no size
-        is given).
+    async def _window_open(self, stream_id):
+        """Wait until the identified stream's flow control window is open.
         """
         stream = self._get_stream(stream_id)
-        await stream.window_condition.wait_for(
-            lambda: self._window_open(stream_id, size=size)
-        )
-
-    async def writable(self):
-        await self._writable.wait()
+        return await stream.window_open.wait()
 
     # Send
 
@@ -142,7 +156,7 @@ class HTTP2Connection(asyncio.Protocol):
         if additional_headers is not None:
             headers.extend(additional_headers)
 
-        await self.writable()
+        await self._writable.wait()
         stream_id = self._h2.get_next_available_stream_id()
         self._h2.send_headers(stream_id, headers, end_stream=end_stream)
         self._flush()
@@ -154,57 +168,88 @@ class HTTP2Connection(asyncio.Protocol):
         the provided data is larger than the connection's maximum outbound
         frame size, it will be broken into several frames as appropriate.
         """
-        max_frame_size = self._h2.max_outbound_frame_size
-
-        if isinstance(max_frame_size, int) and len(data) > max_frame_size:
-            frames = list(chunks(data, max_frame_size))
-        else:
-            frames = [data]
-        frame_count = len(frames)
-
-        for i, frame in enumerate(frames):
+        remaining = data
+        while len(remaining) > 0:
             await asyncio.gather(
-                self.writable(),
-                self.window_open(stream_id, size=len(frame)),
+                self._writable.wait(),
+                self._window_open(stream_id),
             )
-            end = (end_stream is True and i == frame_count - 1)
-            self._h2.send_data(stream_id, frame, end_stream=end)
+
+            remaining_size = len(remaining)
+            window_size = self._h2.local_flow_control_window(stream_id)
+            max_frame_size = self._h2.max_outbound_frame_size
+
+            send_size = min(remaining_size, window_size, max_frame_size)
+            if send_size == 0:
+                continue
+
+            logger.debug(
+                f'[{stream_id}] Sending {send_size} of {remaining_size} bytes '
+                f'(window {window_size}, max {max_frame_size})'
+            )
+
+            to_send = remaining[:send_size]
+            remaining = remaining[send_size:]
+            end = (end_stream is True and len(remaining) == 0)
+
+            self._h2.send_data(stream_id, to_send, end_stream=end)
             self._flush()
 
+            if self._h2.local_flow_control_window(stream_id) == 0:
+                stream = self._get_stream(stream_id)
+                stream.window_open.clear()
+
     # Receive
+
+    async def read_data(self, stream_id: int) -> bytes:
+        """Read data from the specified stream until it is closed by the remote
+        peer. Never returns if the stream never ends.
+        """
+        frames = [f async for f in self.stream_frames(stream_id)]
+        return b''.join(frames)
+
+    async def read_frame(self, stream_id):
+        """Read a single frame of data from the specified stream. If the stream
+        is closed and no frames remain in its buffer, returns an empty bytes
+        object.
+        """
+        stream = self._get_stream(stream_id)
+        frame = await stream.read_frame()
+        size = len(frame)
+        if size > 0 and not stream.closed:
+            await self._update_window(size, stream_id=stream_id)
+        return frame
 
     async def read_headers(self, stream_id):
         stream = self._get_stream(stream_id)
         return await stream.read_headers()
-
-    async def read_data(self, stream_id):
-        stream = self._get_stream(stream_id)
-        return await stream.read()
 
     async def read_trailers(self, stream_id):
         stream = self._get_stream(stream_id)
         return await stream.read_trailers()
 
     def stream_frames(self, stream_id):
-        stream = self._get_stream(stream_id)
-        return stream.stream_frames()
+        """Returns an asynchronous iterator over the incoming data frames
+        suitable for use with an "async for" loop.
+        """
+        return AsyncFrameIterator(self, stream_id)
 
     # Connection management
 
     async def close(self):
-        await self.writable()
+        await self._writable.wait()
         self._h2.close_connection()
         self._flush()
 
     # Stream management
 
     async def end_stream(self, stream_id):
-        await self.writable()
+        await self._writable.wait()
         self._h2.end_stream(stream_id)
         self._flush()
 
     async def reset_stream(self, stream_id, error_code=ErrorCodes.NO_ERROR):
-        await self.writable()
+        await self._writable.wait()
         self._h2.reset_stream(stream_id, error_code=error_code)
         self._flush()
         stream = self._get_stream(stream_id)
