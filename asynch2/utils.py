@@ -3,7 +3,7 @@ import ssl
 from asyncio import Event
 
 
-def get_ssl_context() -> ssl.SSLContext:
+def default_ssl_context() -> ssl.SSLContext:
     """Creates an SSL context suitable for use with HTTP/2. See:
     https://python-hyper.org/projects/h2/en/stable/negotiating-http2.html#client-setup-example
     """
@@ -44,7 +44,7 @@ class ConditionalEvent(Event):
         super().__init__(loop=loop)
         self._predicate = predicate
 
-    def is_set(self):
+    def is_set(self) -> bool:
         self.update()
         return super().is_set()
 
@@ -52,7 +52,7 @@ class ConditionalEvent(Event):
         while not self.update():
             await super().wait()
 
-    def update(self):
+    def update(self) -> bool:
         result = self._predicate()
         if result:
             self.set()

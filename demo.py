@@ -10,6 +10,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from asynch2 import create_connection
+from asynch2.stream import StreamClosedError
 
 
 HOST = 'http2.golang.org'
@@ -26,10 +27,10 @@ def print_headers(headers):
     print('∧∧∧∧ HEADERS ∧∧∧∧\n')
 
 
-def print_data(data):
-    print('∨∨∨∨ DATA ∨∨∨∨')
+def print_data(data, stream_id=None):
+    print(f'∨∨∨∨ DATA [{stream_id}] ∨∨∨∨')
     print(data.decode())
-    print('∧∧∧∧ DATA ∧∧∧∧\n')
+    print(f'∧∧∧∧ DATA [{stream_id}] ∧∧∧∧\n')
 
 
 def print_trailers(trailers):
@@ -39,13 +40,7 @@ def print_trailers(trailers):
 
 
 async def clockstream(http2):
-    stream_id = await http2.send_request(
-        'GET',
-        'https',
-        HOST,
-        '/clockstream',
-        end_stream=True,
-    )
+    stream_id = await http2.send_request('GET', '/clockstream', end_stream=True)
 
     response = await http2.read_headers(stream_id)
     print_headers(response)
@@ -55,41 +50,68 @@ async def clockstream(http2):
         lambda s, f: asyncio.ensure_future(http2.reset_stream(stream_id)),
     )
 
-    print('∨∨∨∨ DATA ∨∨∨∨')
+    print(f'∨∨∨∨ DATA [{stream_id}] ∨∨∨∨')
     async for frame in http2.stream_frames(stream_id):
         print(frame.decode(), end='')
-    print('∧∧∧∧ DATA ∧∧∧∧\n')
+    print(f'∧∧∧∧ DATA [{stream_id}] ∧∧∧∧\n')
 
 
 async def crc32(http2, data):
-    stream_id = await http2.send_request('PUT', 'https', HOST, '/crc32')
+    stream_id = await http2.send_request('PUT', '/crc32')
     await http2.send_data(stream_id, data, end_stream=True)
 
     response = await http2.read_headers(stream_id)
     print_headers(response)
     data = await http2.read_data(stream_id)
-    print_data(data)
+    print_data(data, stream_id)
     trailers = await http2.read_trailers(stream_id)
     print_trailers(trailers)
 
 
 async def echo(http2, data):
-    stream_id = await http2.send_request('PUT', 'https', HOST, '/ECHO')
+    stream_id = await http2.send_request('PUT', '/ECHO')
     await http2.send_data(stream_id, data, end_stream=True)
 
     response = await http2.read_headers(stream_id)
     print_headers(response)
     data = await http2.read_data(stream_id)
-    print_data(data)
+    print_data(data, stream_id)
     trailers = await http2.read_trailers(stream_id)
     print_trailers(trailers)
+
+
+async def serverpush(http2):
+    parent_id = await http2.send_request('GET', '/serverpush', end_stream=True)
+
+    response = await http2.read_headers(parent_id)
+    print_headers(response)
+
+    pushed = await http2.get_pushed_stream_ids(parent_id)
+    stream_data = {s_id: b'' for s_id in pushed}
+    stream_data[parent_id] = b''
+
+    while len(stream_data) > 0:
+        for s_id in list(stream_data.keys()):
+            while True:
+                # Consume all immediately available data from each stream
+                try:
+                    frame = http2.read_frame_nowait(s_id)
+                except StreamClosedError:
+                    data = stream_data.pop(s_id)
+                    print_data(data, s_id)
+                    break
+
+                if frame is None:
+                    break
+                stream_data[s_id] += frame
+
+        # Buffered data consumed; sleep to allow more to arrive
+        await asyncio.sleep(0.01)
 
 
 async def reqinfo(http2):
     stream_id = await http2.send_request(
         'GET',
-        'https',
-        HOST,
         '/reqinfo',
         additional_headers=[('foo', 'bar')],
         end_stream=True,
@@ -98,7 +120,7 @@ async def reqinfo(http2):
     response = await http2.read_headers(stream_id)
     print_headers(response)
     data = await http2.read_data(stream_id)
-    print_data(data)
+    print_data(data, stream_id)
     trailers = await http2.read_trailers(stream_id)
     print_trailers(trailers)
 
@@ -118,6 +140,8 @@ async def main(args, loop):
         await echo(http2, data)
     elif args.endpoint == 'reqinfo':
         await reqinfo(http2)
+    elif args.endpoint == 'serverpush':
+        await serverpush(http2)
 
 
 if __name__ == '__main__':
@@ -133,7 +157,7 @@ if __name__ == '__main__':
         nargs='?',
         default='reqinfo',
         type=str,
-        choices=['clockstream', 'crc32', 'echo', 'reqinfo'],
+        choices=['clockstream', 'crc32', 'echo', 'reqinfo', 'serverpush'],
         help='demo endpoint to use',
     )
     parser.add_argument(

@@ -1,19 +1,34 @@
 # -*- coding: utf-8 -*-
 import asyncio
+from ssl import SSLContext
 
-from asynch2.connection import HTTP2Connection
-from asynch2.utils import get_ssl_context
+from asynch2.connection import HTTP2ClientConnection
+from asynch2.utils import default_ssl_context
 
 
-async def create_connection(host, port, *, loop=None, **kwargs):
+async def create_connection(
+    host,
+    port,
+    *,
+    loop=None,
+    secure=True,
+    ssl_context=None,
+    **kwargs,
+):
     """Open an HTTP/2 connection to the specified host/port.
     """
     loop = loop or asyncio.get_event_loop()
-    connection = HTTP2Connection(loop=loop, client_side=True, **kwargs)
+
+    secure = True if port == 443 else secure
+    connection = HTTP2ClientConnection(host, loop=loop, secure=secure)
+    if not isinstance(ssl_context, SSLContext):
+        ssl_context = default_ssl_context()
+
     await loop.create_connection(
         lambda: connection,
         host=host,
         port=port,
-        ssl=get_ssl_context(),
+        ssl=ssl_context,
     )
+
     return connection
