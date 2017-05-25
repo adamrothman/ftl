@@ -6,6 +6,7 @@ simple HTTP/2 endpoints to play with.
 import asyncio
 import logging
 import signal
+import zlib
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -42,8 +43,8 @@ def print_trailers(trailers):
 async def clockstream(http2):
     stream_id = await http2.send_request('GET', '/clockstream', end_stream=True)
 
-    response = await http2.read_headers(stream_id)
-    print_headers(response)
+    response = await http2.read_response(stream_id)
+    print_headers(response.headers)
 
     signal.signal(
         signal.SIGINT,
@@ -57,14 +58,18 @@ async def clockstream(http2):
 
 
 async def crc32(http2, data):
+    size = len(data)
+    cksum = zlib.crc32(data)
+    print(f'CRC32 computed locally ({size} bytes): {cksum:08x}\n')
+
     stream_id = await http2.send_request('PUT', '/crc32')
     await http2.send_data(stream_id, data, end_stream=True)
 
-    response = await http2.read_headers(stream_id)
-    print_headers(response)
+    response = await http2.read_response(stream_id)
+    print_headers(response.headers)
     data = await http2.read_data(stream_id)
     print_data(data, stream_id)
-    trailers = await http2.read_trailers(stream_id)
+    trailers = await response.trailers()
     print_trailers(trailers)
 
 
@@ -72,19 +77,35 @@ async def echo(http2, data):
     stream_id = await http2.send_request('PUT', '/ECHO')
     await http2.send_data(stream_id, data, end_stream=True)
 
-    response = await http2.read_headers(stream_id)
-    print_headers(response)
+    response = await http2.read_response(stream_id)
+    print_headers(response.headers)
     data = await http2.read_data(stream_id)
     print_data(data, stream_id)
-    trailers = await http2.read_trailers(stream_id)
+    trailers = await response.trailers()
+    print_trailers(trailers)
+
+
+async def reqinfo(http2):
+    stream_id = await http2.send_request(
+        'GET',
+        '/reqinfo',
+        additional_headers=[('foo', 'bar')],
+        end_stream=True,
+    )
+
+    response = await http2.read_response(stream_id)
+    print_headers(response.headers)
+    data = await http2.read_data(stream_id)
+    print_data(data, stream_id)
+    trailers = await response.trailers()
     print_trailers(trailers)
 
 
 async def serverpush(http2):
     parent_id = await http2.send_request('GET', '/serverpush', end_stream=True)
 
-    response = await http2.read_headers(parent_id)
-    print_headers(response)
+    response = await http2.read_response(parent_id)
+    print_headers(response.headers)
 
     pushed = await http2.get_pushed_stream_ids(parent_id)
     stream_data = {s_id: b'' for s_id in pushed}
@@ -107,22 +128,6 @@ async def serverpush(http2):
 
         # Buffered data consumed; sleep to allow more to arrive
         await asyncio.sleep(0.01)
-
-
-async def reqinfo(http2):
-    stream_id = await http2.send_request(
-        'GET',
-        '/reqinfo',
-        additional_headers=[('foo', 'bar')],
-        end_stream=True,
-    )
-
-    response = await http2.read_headers(stream_id)
-    print_headers(response)
-    data = await http2.read_data(stream_id)
-    print_data(data, stream_id)
-    trailers = await http2.read_trailers(stream_id)
-    print_trailers(trailers)
 
 
 async def main(args, loop):

@@ -12,6 +12,7 @@ from h2.settings import SettingCodes
 
 from ftl.errors import StreamClosedError
 from ftl.errors import UnknownStreamError
+from ftl.response import Response
 from ftl.stream import HTTP2Stream
 from ftl.utils import ConditionalEvent
 
@@ -288,13 +289,9 @@ class HTTP2Connection(asyncio.Protocol):
             self._acknowledge_data(frame.flow_controlled_length, stream_id)
         return frame.data
 
-    async def read_headers(self, stream_id):
+    async def read_response(self, stream_id) -> Response:
         stream = self._get_stream(stream_id)
-        return await stream.read_headers()
-
-    async def read_trailers(self, stream_id):
-        stream = self._get_stream(stream_id)
-        return await stream.read_trailers()
+        return await stream.response()
 
     def stream_frames(self, stream_id):
         """Returns an asynchronous iterator over the incoming data frames

@@ -7,8 +7,10 @@ from typing import Optional
 from typing import Tuple
 
 from multidict import MultiDict
+from multidict import MultiDictProxy
 
 from ftl.errors import StreamClosedError
+from ftl.response import Response
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +30,8 @@ class HTTP2Stream:
         self._data_frames = asyncio.Queue(loop=loop)
 
         self._request_headers = None
-        self._response_headers = asyncio.Future(loop=loop)
+
+        self._response = asyncio.Future(loop=loop)
         self._response_trailers = asyncio.Future(loop=loop)
 
         self._window_open = asyncio.Event(loop=loop)
@@ -77,13 +80,15 @@ class HTTP2Stream:
         self._data_frames.put_nowait(frame)
 
     def receive_promise(self, headers: List[Tuple[str, str]]):
-        self._request_headers = MultiDict(headers)
+        self._request_headers = MultiDictProxy(MultiDict(headers))
 
     def receive_response(self, headers: List[Tuple[str, str]]):
-        self._response_headers.set_result(MultiDict(headers))
+        response = Response(self.id, headers, self._response_trailers)
+        self._response.set_result(response)
 
     def receive_trailers(self, trailers: List[Tuple[str, str]]):
-        self._response_trailers.set_result(MultiDict(trailers))
+        trailers = MultiDictProxy(MultiDict(trailers))
+        self._response_trailers.set_result(trailers)
 
     # Readers
 
@@ -121,8 +126,5 @@ class HTTP2Stream:
             raise StreamClosedError
         return frame
 
-    async def read_headers(self) -> MultiDict:
-        return await self._response_headers
-
-    async def read_trailers(self) -> MultiDict:
-        return await self._response_trailers
+    async def response(self) -> Response:
+        return await self._response
