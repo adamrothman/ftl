@@ -8,7 +8,7 @@ from typing import Tuple
 
 from multidict import MultiDict
 
-from asynch2.errors import StreamClosedError
+from ftl.errors import StreamClosedError
 
 
 logger = logging.getLogger(__name__)

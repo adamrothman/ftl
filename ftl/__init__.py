@@ -2,8 +2,8 @@
 import asyncio
 from ssl import SSLContext
 
-from asynch2.connection import HTTP2ClientConnection
-from asynch2.utils import default_ssl_context
+from ftl.connection import HTTP2ClientConnection
+from ftl.utils import default_ssl_context
 
 
 async def create_connection(

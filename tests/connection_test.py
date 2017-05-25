@@ -4,7 +4,7 @@ from zlib import crc32
 
 import pytest
 
-from asynch2 import create_connection
+from ftl import create_connection
 
 
 @pytest.mark.asyncio

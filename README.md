@@ -1,4 +1,4 @@
-# asynch2
+# ftl
 An asynchronous HTTP/2 implementation in Python. The details of the protocol itself (encoding, state management, etc.) are handled by the excellent [h2](https://github.com/python-hyper/hyper-h2) library, and [asyncio](https://docs.python.org/3/library/asyncio.html) provides non-blocking I/O.
 
 ## Supported features

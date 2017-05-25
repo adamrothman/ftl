@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""This file demonstrates usage of asynch2 and serves as a very basic
-functionality test. It makes requests to https://http2.golang.org which
-provides a number of simple HTTP/2 endpoints to play with.
+"""This file demonstrates usage of ftl and serves as a very basic functionality
+test. It makes requests to https://http2.golang.org which provides a number of
+simple HTTP/2 endpoints to play with.
 """
 import asyncio
 import logging
@@ -9,8 +9,8 @@ import signal
 from argparse import ArgumentParser
 from pathlib import Path
 
-from asynch2 import create_connection
-from asynch2.stream import StreamClosedError
+from ftl import create_connection
+from ftl.stream import StreamClosedError
 
 
 HOST = 'http2.golang.org'

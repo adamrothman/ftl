@@ -5,8 +5,8 @@ from setuptools import setup
 
 
 setup(
-    name='asynch2',
-    version='0.0.0',
+    name='ftl',
+    version='0.0.1',
 
     packages=find_packages(),
 
@@ -17,6 +17,16 @@ setup(
 
     author='Adam Rothman',
     author_email='adam@other.xyz',
+    license='Apache License 2.0',
+
     description='asyncio-based HTTP/2 implementation',
-    url='https://github.com/other-xyz/asynch2',
+    classifiers=[
+        'Intended Audience :: Developers',
+        'Programming Language :: Python',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+    ],
+
+    url='https://github.com/other-xyz/ftl',
 )

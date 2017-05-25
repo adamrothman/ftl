@@ -10,10 +10,10 @@ from h2.connection import H2Connection
 from h2.errors import ErrorCodes
 from h2.settings import SettingCodes
 
-from asynch2.errors import StreamClosedError
-from asynch2.errors import UnknownStreamError
-from asynch2.stream import HTTP2Stream
-from asynch2.utils import ConditionalEvent
+from ftl.errors import StreamClosedError
+from ftl.errors import UnknownStreamError
+from ftl.stream import HTTP2Stream
+from ftl.utils import ConditionalEvent
 
 
 logger = logging.getLogger(__name__)
