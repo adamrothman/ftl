@@ -1,4 +1,4 @@
-.PHONY: clean test tag
+.PHONY: clean tag test pypi
 
 version := $(shell python3 setup.py --version)
 
@@ -19,6 +19,7 @@ test:
 # Distribution
 
 pypi:
+	rm -r dist
 	python3 setup.py sdist
 	python3 setup.py bdist_wheel
 	twine upload dist/*
