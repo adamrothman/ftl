@@ -132,7 +132,10 @@ class HTTP2Connection(asyncio.Protocol):
 
     def _get_stream(self, stream_id):
         if stream_id not in self._streams:
-            self._streams[stream_id] = HTTP2Stream(stream_id, loop=self._loop)
+            stream = HTTP2Stream(stream_id, loop=self._loop)
+            if self._h2.local_flow_control_window(stream_id) > 0:
+                stream.window_open.set()
+            self._streams[stream_id] = stream
         return self._streams[stream_id]
 
     # Event handlers
