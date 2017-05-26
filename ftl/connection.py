@@ -10,7 +10,7 @@ from h2.connection import H2Connection
 from h2.errors import ErrorCodes
 from h2.settings import SettingCodes
 
-from ftl.errors import StreamClosedError
+from ftl.errors import StreamConsumedError
 from ftl.errors import UnknownStreamError
 from ftl.response import Response
 from ftl.stream import HTTP2Stream
@@ -34,7 +34,7 @@ class AsyncFrameIterator:
     async def __anext__(self):
         try:
             return await self.connection.read_frame(self.stream.id)
-        except StreamClosedError:
+        except StreamConsumedError:
             raise StopAsyncIteration
 
 
@@ -83,6 +83,8 @@ class HTTP2Connection(asyncio.Protocol):
     # asyncio.Protocol callbacks
 
     def connection_made(self, transport):
+        self._peername = transport.get_extra_info('peername')
+        logger.debug(f'Connection to {self._peername} established')
         self._transport = transport
         self._h2 = H2Connection(config=self._h2_config)
         self._h2.initiate_connection()
@@ -90,9 +92,9 @@ class HTTP2Connection(asyncio.Protocol):
         self.resume_writing()
 
     def connection_lost(self, exc):
+        logger.debug(f'Connection to {self._peername} lost: {exc}')
         self.pause_writing()
         self._h2 = None
-        self._transport = None
 
     def data_received(self, data):
         events = self._h2.receive_data(data)
@@ -113,6 +115,10 @@ class HTTP2Connection(asyncio.Protocol):
         self._writable.update()
 
     # Properties
+
+    @property
+    def closed(self):
+        return self._transport.is_closing()
 
     @property
     def secure(self):
@@ -144,18 +150,22 @@ class HTTP2Connection(asyncio.Protocol):
         pass
 
     def _connection_terminated(self, event):
-        logger.warning(
-            f'Connection terminated by remote peer: {event.error_code}'
-        )
+        try:
+            code = ErrorCodes(event.error_code)
+        except ValueError:
+            code = event.error_code
+        logger.warning(f'Connection terminated by remote peer: {code!r}')
         self._transport.close()
 
     def _data_received(self, event):
+        fc_size = event.flow_controlled_length
+        window = self._h2.remote_flow_control_window(event.stream_id)
         logger.debug(
-            f'Stream {event.stream_id} received data (window '
-            f'{self._h2.remote_flow_control_window(event.stream_id)})'
+            f'[{event.stream_id}] Received data ({fc_size} bytes; '
+            f'{window} remaining in window)'
         )
         stream = self._get_stream(event.stream_id)
-        stream.receive_data(event.data, event.flow_controlled_length)
+        stream.receive_data(event.data, fc_size)
 
     def _informational_response_received(self, event):
         pass
@@ -173,6 +183,7 @@ class HTTP2Connection(asyncio.Protocol):
         pass
 
     def _response_received(self, event):
+        logger.debug(f'[{event.stream_id}] Received response')
         stream = self._get_stream(event.stream_id)
         stream.receive_response(event.headers)
 
@@ -187,7 +198,7 @@ class HTTP2Connection(asyncio.Protocol):
         pass
 
     def _stream_ended(self, event):
-        logger.debug(f'Stream {event.stream_id} ended')
+        logger.debug(f'[{event.stream_id}] Ended')
         stream = self._get_stream(event.stream_id)
         stream.close()
         self._stream_creatable.update()
@@ -247,8 +258,8 @@ class HTTP2Connection(asyncio.Protocol):
                 continue
 
             logger.debug(
-                f'Stream {stream_id} sending {send_size} of {remaining_size} '
-                f'bytes (window {window_size}, max {max_frame_size})'
+                f'[{stream_id}] Sending {send_size} of {remaining_size} '
+                f'bytes (window {window_size}, frame max {max_frame_size})'
             )
 
             to_send = remaining[:send_size]
@@ -275,7 +286,7 @@ class HTTP2Connection(asyncio.Protocol):
         """Read a single frame of data from the specified stream, waiting until
         frames are available if none are present in the local buffer. If the
         stream is closed and all buffered frames have been consumed, raises a
-        StreamClosedError.
+        StreamConsumedError.
         """
         stream = self._get_stream(stream_id)
         frame = await stream.read_frame()
@@ -346,15 +357,16 @@ class HTTP2ClientConnection(HTTP2Connection):
     # Event handlers
 
     def _pushed_stream_received(self, event):
+        parent = event.parent_stream_id
+        pushed = event.pushed_stream_id
         logger.debug(
-            f'Stream {event.parent_stream_id} received pushed stream '
-            f'{event.pushed_stream_id}: {event.headers}'
+            f'[{parent}] Received pushed stream {pushed}: {event.headers}'
         )
 
-        stream = self._get_stream(event.pushed_stream_id)
+        stream = self._get_stream(pushed)
         stream.receive_promise(event.headers)
 
-        parent = self._get_stream(event.parent_stream_id)
+        parent = self._get_stream(parent)
         self._pushed_streams[parent.id].append(stream.id)
         parent.pushed_streams_available.set()
 
@@ -367,9 +379,10 @@ class HTTP2ClientConnection(HTTP2Connection):
         additional_headers=None,
         end_stream=False,
     ):
+        scheme = 'https' if self.secure else 'http'
         headers = [
             (':method', method),
-            (':scheme', 'https' if self.secure else 'http'),
+            (':scheme', scheme),
             (':authority', self.host),
             (':path', path),
         ]
@@ -380,7 +393,12 @@ class HTTP2ClientConnection(HTTP2Connection):
             self._writable.wait(),
             self._stream_creatable.wait(),
         )
+
         stream_id = self._h2.get_next_available_stream_id()
+        logger.debug(
+            f'[{stream_id}] Sending request: {method} '
+            f'{scheme}://{self.host}{path}'
+        )
         self._h2.send_headers(stream_id, headers, end_stream=end_stream)
         self._flush()
 

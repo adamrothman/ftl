@@ -9,7 +9,7 @@ from typing import Tuple
 from multidict import MultiDict
 from multidict import MultiDictProxy
 
-from ftl.errors import StreamClosedError
+from ftl.errors import StreamConsumedError
 from ftl.response import Response
 
 
@@ -96,34 +96,34 @@ class HTTP2Stream:
         """Read a single frame from the local buffer.
 
         If no frames are available but the stream is still open, waits until
-        more frames arrive. Otherwise, raises StreamClosedError.
+        more frames arrive. Otherwise, raises StreamConsumedError.
 
         When a stream is closed, a single `None` is added to the data frame
         Queue to wake up any waiting `read_frame` coroutines.
         """
         if self._data_frames.qsize() == 0 and self.closed:
-            raise StreamClosedError
+            raise StreamConsumedError(self.id)
         frame = await self._data_frames.get()
         self._data_frames.task_done()
         if frame is None:
-            raise StreamClosedError
+            raise StreamConsumedError(self.id)
         return frame
 
     def read_frame_nowait(self) -> Optional[DataFrame]:
         """Read a single frame from the local buffer immediately.
 
         If no frames are available but the stream is still open, returns None.
-        Otherwise, raises StreamClosedError.
+        Otherwise, raises StreamConsumedError.
         """
         try:
             frame = self._data_frames.get_nowait()
         except asyncio.QueueEmpty:
             if self.closed:
-                raise StreamClosedError
+                raise StreamConsumedError(self.id)
             return None
         self._data_frames.task_done()
         if frame is None:
-            raise StreamClosedError
+            raise StreamConsumedError(self.id)
         return frame
 
     async def response(self) -> Response:

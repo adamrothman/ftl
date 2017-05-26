@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from ftl import create_connection
-from ftl.stream import StreamClosedError
+from ftl.stream import StreamConsumedError
 
 
 HOST = 'http2.golang.org'
@@ -108,6 +108,7 @@ async def serverpush(http2):
     print_headers(response.headers)
 
     pushed = await http2.get_pushed_stream_ids(parent_id)
+    print(f'{len(pushed)} streams pushed: {pushed}')
     stream_data = {s_id: b'' for s_id in pushed}
     stream_data[parent_id] = b''
 
@@ -117,9 +118,9 @@ async def serverpush(http2):
                 # Consume all immediately available data from each stream
                 try:
                     frame = http2.read_frame_nowait(s_id)
-                except StreamClosedError:
-                    data = stream_data.pop(s_id)
-                    print_data(data, s_id)
+                except StreamConsumedError as e:
+                    data = stream_data.pop(e.stream_id)
+                    print(f'Stream {e.stream_id} ended; received {len(data)} bytes')
                     break
 
                 if frame is None:
