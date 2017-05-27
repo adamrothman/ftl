@@ -16,6 +16,9 @@ tag:
 test:
 	tox --recreate
 
+retest:
+	tox
+
 # Distribution
 
 pypi:

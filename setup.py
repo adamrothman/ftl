@@ -6,12 +6,13 @@ from setuptools import setup
 
 setup(
     name='ftl',
-    version='0.0.5',
+    version='0.0.6',
 
     packages=find_packages(),
 
     install_requires=[
         'h2',
+        'hpack',
         'multidict',
     ],
 

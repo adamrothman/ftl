@@ -9,6 +9,8 @@ from h2.config import H2Configuration
 from h2.connection import H2Connection
 from h2.errors import ErrorCodes
 from h2.settings import SettingCodes
+from hpack import HeaderTuple
+from hpack import NeverIndexedHeaderTuple
 
 from ftl.errors import StreamConsumedError
 from ftl.errors import UnknownStreamError
@@ -381,10 +383,10 @@ class HTTP2ClientConnection(HTTP2Connection):
     ):
         scheme = 'https' if self.secure else 'http'
         headers = [
-            (':method', method),
-            (':scheme', scheme),
-            (':authority', self.host),
-            (':path', path),
+            HeaderTuple(':method', method),
+            HeaderTuple(':scheme', scheme),
+            HeaderTuple(':authority', self.host),
+            NeverIndexedHeaderTuple(':path', path),
         ]
         if additional_headers is not None:
             headers.extend(additional_headers)
