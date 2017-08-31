@@ -16,12 +16,11 @@ class Response:
         trailers: asyncio.Future,
         *,
         loop=None,
-    ):
+    ) -> None:
         self._stream_id = stream_id
-        headers = MultiDictProxy(MultiDict(headers))
-        self._status = int(headers[':status'])
-        self._headers = headers
+        self._headers = MultiDictProxy(MultiDict(headers))
         self._trailers = trailers
+        self._status = int(self._headers[':status'])
 
     @property
     def stream_id(self) -> int:

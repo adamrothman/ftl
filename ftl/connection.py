@@ -2,18 +2,24 @@
 import asyncio
 import logging
 from collections import defaultdict
+from typing import AsyncIterator
+from typing import Dict
+from typing import Iterable
+from typing import List
 from typing import Optional
 
 import h2.events
 from h2.config import H2Configuration
 from h2.connection import H2Connection
 from h2.errors import ErrorCodes
+from h2.exceptions import NoSuchStreamError
+from h2.exceptions import StreamClosedError
 from h2.settings import SettingCodes
 from hpack import HeaderTuple
 from hpack import NeverIndexedHeaderTuple
 
+from ftl.errors import ConnectionClosedError
 from ftl.errors import StreamConsumedError
-from ftl.errors import UnknownStreamError
 from ftl.response import Response
 from ftl.stream import HTTP2Stream
 from ftl.utils import ConditionalEvent
@@ -22,7 +28,7 @@ from ftl.utils import ConditionalEvent
 logger = logging.getLogger(__name__)
 
 
-class AsyncFrameIterator:
+class AsyncFrameIterator(AsyncIterator[bytes]):
     """Async iterator for an HTTP2Stream's data frames.
     """
 
@@ -30,10 +36,10 @@ class AsyncFrameIterator:
         self.connection = connection
         self.stream = connection._get_stream(stream_id)
 
-    def __aiter__(self):
+    def __aiter__(self) -> AsyncIterator[bytes]:
         return self
 
-    async def __anext__(self):
+    async def __anext__(self) -> bytes:
         try:
             return await self.connection.read_frame(self.stream.id)
         except StreamConsumedError:
@@ -138,7 +144,7 @@ class HTTP2Connection(asyncio.Protocol):
         if data and self._transport:
             self._transport.write(data)
 
-    def _get_stream(self, stream_id):
+    def _create_stream(self, stream_id) -> HTTP2Stream:
         if stream_id not in self._streams:
             stream = HTTP2Stream(stream_id, loop=self._loop)
             if self._h2.local_flow_control_window(stream_id) > 0:
@@ -146,78 +152,98 @@ class HTTP2Connection(asyncio.Protocol):
             self._streams[stream_id] = stream
         return self._streams[stream_id]
 
+    def _get_stream(self, stream_id) -> HTTP2Stream:
+        if stream_id not in self._streams:
+            raise NoSuchStreamError(stream_id)
+        return self._streams[stream_id]
+
     # Event handlers
 
-    def _alternative_service_available(self, event):
+    def _alternative_service_available(
+        self,
+        event: h2.events.AlternativeServiceAvailable,
+    ):
         pass
 
-    def _connection_terminated(self, event):
+    def _connection_terminated(self, event: h2.events.ConnectionTerminated):
         try:
             code = ErrorCodes(event.error_code)
         except ValueError:
             code = event.error_code
-        logger.warning(f'Connection terminated by remote peer: {code!r}')
+
+        if code == ErrorCodes.NO_ERROR:
+            logger.debug('Connection terminated gracefully by remote peer')
+        else:
+            logger.warning(f'Connection terminated by remote peer: {code!r}')
+
         self._transport.close()
 
-    def _data_received(self, event):
-        fc_size = event.flow_controlled_length
-        window = self._h2.remote_flow_control_window(event.stream_id)
-        logger.debug(
-            f'[{event.stream_id}] Received data ({fc_size} bytes; '
-            f'{window} remaining in window)'
-        )
+    def _data_received(self, event: h2.events.DataReceived):
         stream = self._get_stream(event.stream_id)
+        fc_size = event.flow_controlled_length
+
+        message = f'[{event.stream_id}] Received data ({fc_size} bytes; '
+        if event.stream_ended is None:
+            window = self._h2.remote_flow_control_window(event.stream_id)
+            message += f'{window} remaining in window)'
+        else:
+            message += 'stream ended)'
+        logger.debug(message)
+
         stream.receive_data(event.data, fc_size)
 
-    def _informational_response_received(self, event):
+    def _informational_response_received(
+        self,
+        event: h2.events.InformationalResponseReceived,
+    ):
         pass
 
-    def _ping_acknowledged(self, event):
+    def _ping_acknowledged(self, event: h2.events.PingAcknowledged):
         pass
 
-    def _priority_updated(self, event):
+    def _priority_updated(self, event: h2.events.PriorityUpdated):
         pass
 
-    def _pushed_stream_received(self, event):
+    def _pushed_stream_received(self, event: h2.events.PushedStreamReceived):
         pass
 
-    def _request_received(self, event):
+    def _request_received(self, event: h2.events.RequestReceived):
         pass
 
-    def _response_received(self, event):
+    def _response_received(self, event: h2.events.ResponseReceived):
         logger.debug(f'[{event.stream_id}] Received response')
-        stream = self._get_stream(event.stream_id)
+        stream = self._create_stream(event.stream_id)
         stream.receive_response(event.headers)
 
-    def _remote_settings_changed(self, event):
+    def _remote_settings_changed(self, event: h2.events.RemoteSettingsChanged):
         if SettingCodes.INITIAL_WINDOW_SIZE in event.changed_settings:
             for stream in self._streams.values():
                 stream.window_open.set()
         if SettingCodes.MAX_CONCURRENT_STREAMS in event.changed_settings:
             self._stream_creatable.update()
 
-    def _settings_acknowledged(self, event):
+    def _settings_acknowledged(self, event: h2.events.SettingsAcknowledged):
         pass
 
-    def _stream_ended(self, event):
+    def _stream_ended(self, event: h2.events.StreamEnded):
         logger.debug(f'[{event.stream_id}] Ended')
         stream = self._get_stream(event.stream_id)
         stream.close()
         self._stream_creatable.update()
 
-    def _stream_reset(self, event):
+    def _stream_reset(self, event: h2.events.StreamReset):
         stream = self._get_stream(event.stream_id)
         stream.close()
         self._stream_creatable.update()
 
-    def _trailers_received(self, event):
+    def _trailers_received(self, event: h2.events.TrailersReceived):
         stream = self._get_stream(event.stream_id)
         stream.receive_trailers(event.headers)
 
-    def _unknown_frame_received(self, event):
+    def _unknown_frame_received(self, event: h2.events.UnknownFrameReceived):
         pass
 
-    def _window_updated(self, event):
+    def _window_updated(self, event: h2.events.WindowUpdated):
         if event.stream_id == 0:
             for stream in self._streams.values():
                 stream.window_open.set()
@@ -227,11 +253,11 @@ class HTTP2Connection(asyncio.Protocol):
 
     # Flow control
 
-    def _acknowledge_data(self, size, stream_id):
+    def _acknowledge_data(self, size: int, stream_id: int):
         self._h2.acknowledge_received_data(size, stream_id)
         self._flush()
 
-    async def _window_open(self, stream_id):
+    async def _window_open(self, stream_id: int):
         """Wait until the identified stream's flow control window is open.
         """
         stream = self._get_stream(stream_id)
@@ -239,20 +265,31 @@ class HTTP2Connection(asyncio.Protocol):
 
     # Send
 
-    async def send_data(self, stream_id, data, end_stream=False):
+    async def send_data(
+        self,
+        stream_id: int,
+        data: bytes,
+        end_stream: bool = False,
+    ):
         """Send data, respecting the receiver's flow control instructions. If
         the provided data is larger than the connection's maximum outbound
         frame size, it will be broken into several frames as appropriate.
         """
+        if self.closed:
+            raise ConnectionClosedError
+        stream = self._get_stream(stream_id)
+        if stream.closed:
+            raise StreamClosedError(stream_id)
+
         remaining = data
         while len(remaining) > 0:
             await asyncio.gather(
                 self._writable.wait(),
-                self._window_open(stream_id),
+                self._window_open(stream.id),
             )
 
             remaining_size = len(remaining)
-            window_size = self._h2.local_flow_control_window(stream_id)
+            window_size = self._h2.local_flow_control_window(stream.id)
             max_frame_size = self._h2.max_outbound_frame_size
 
             send_size = min(remaining_size, window_size, max_frame_size)
@@ -260,7 +297,7 @@ class HTTP2Connection(asyncio.Protocol):
                 continue
 
             logger.debug(
-                f'[{stream_id}] Sending {send_size} of {remaining_size} '
+                f'[{stream.id}] Sending {send_size} of {remaining_size} '
                 f'bytes (window {window_size}, frame max {max_frame_size})'
             )
 
@@ -268,11 +305,10 @@ class HTTP2Connection(asyncio.Protocol):
             remaining = remaining[send_size:]
             end = (end_stream is True and len(remaining) == 0)
 
-            self._h2.send_data(stream_id, to_send, end_stream=end)
+            self._h2.send_data(stream.id, to_send, end_stream=end)
             self._flush()
 
-            if self._h2.local_flow_control_window(stream_id) == 0:
-                stream = self._get_stream(stream_id)
+            if self._h2.local_flow_control_window(stream.id) == 0:
                 stream.window_open.clear()
 
     # Receive
@@ -284,7 +320,7 @@ class HTTP2Connection(asyncio.Protocol):
         frames = [f async for f in self.stream_frames(stream_id)]
         return b''.join(frames)
 
-    async def read_frame(self, stream_id) -> bytes:
+    async def read_frame(self, stream_id: int) -> bytes:
         """Read a single frame of data from the specified stream, waiting until
         frames are available if none are present in the local buffer. If the
         stream is closed and all buffered frames have been consumed, raises a
@@ -296,20 +332,20 @@ class HTTP2Connection(asyncio.Protocol):
             self._acknowledge_data(frame.flow_controlled_length, stream_id)
         return frame.data
 
-    def read_frame_nowait(self, stream_id) -> Optional[bytes]:
+    def read_frame_nowait(self, stream_id: int) -> Optional[bytes]:
         stream = self._get_stream(stream_id)
         frame = stream.read_frame_nowait()
         if frame is None:
-            return frame
+            return None
         elif frame.flow_controlled_length > 0:
             self._acknowledge_data(frame.flow_controlled_length, stream_id)
         return frame.data
 
-    async def read_response(self, stream_id) -> Response:
+    async def read_response(self, stream_id: int) -> Response:
         stream = self._get_stream(stream_id)
         return await stream.response()
 
-    def stream_frames(self, stream_id):
+    def stream_frames(self, stream_id: int) -> AsyncFrameIterator:
         """Returns an asynchronous iterator over the incoming data frames
         suitable for use with an "async for" loop.
         """
@@ -321,15 +357,20 @@ class HTTP2Connection(asyncio.Protocol):
         await self._writable.wait()
         self._h2.close_connection()
         self._flush()
+        self._transport.close()
 
     # Stream management
 
-    async def end_stream(self, stream_id):
+    async def end_stream(self, stream_id: int):
         await self._writable.wait()
         self._h2.end_stream(stream_id)
         self._flush()
 
-    async def reset_stream(self, stream_id, error_code=ErrorCodes.NO_ERROR):
+    async def reset_stream(
+        self,
+        stream_id: int,
+        error_code: ErrorCodes = ErrorCodes.NO_ERROR,
+    ):
         await self._writable.wait()
         self._h2.reset_stream(stream_id, error_code=error_code)
         self._flush()
@@ -348,7 +389,7 @@ class HTTP2ClientConnection(HTTP2Connection):
             header_encoding='utf-8',
         )
 
-        self._pushed_streams = defaultdict(list)
+        self._pushed_stream_ids: Dict[int, List[int]] = defaultdict(list)
 
     # Properties
 
@@ -358,29 +399,32 @@ class HTTP2ClientConnection(HTTP2Connection):
 
     # Event handlers
 
-    def _pushed_stream_received(self, event):
-        parent = event.parent_stream_id
-        pushed = event.pushed_stream_id
+    def _pushed_stream_received(self, event: h2.events.PushedStreamReceived):
+        parent_id = event.parent_stream_id
+        pushed_id = event.pushed_stream_id
         logger.debug(
-            f'[{parent}] Received pushed stream {pushed}: {event.headers}'
+            f'[{parent_id}] Received pushed stream {pushed_id}: {event.headers}'
         )
 
-        stream = self._get_stream(pushed)
-        stream.receive_promise(event.headers)
+        pushed = self._create_stream(pushed_id)
+        pushed.receive_promise(event.headers)
 
-        parent = self._get_stream(parent)
-        self._pushed_streams[parent.id].append(stream.id)
+        parent = self._get_stream(parent_id)
+        self._pushed_stream_ids[parent.id].append(pushed.id)
         parent.pushed_streams_available.set()
 
     # Send
 
     async def send_request(
         self,
-        method,
-        path,
-        additional_headers=None,
-        end_stream=False,
-    ):
+        method: str,
+        path: str,
+        additional_headers: Optional[Iterable] = None,
+        end_stream: bool = False,
+    ) -> int:
+        if self.closed:
+            raise ConnectionClosedError
+
         scheme = 'https' if self.secure else 'http'
         headers = [
             HeaderTuple(':method', method),
@@ -404,28 +448,30 @@ class HTTP2ClientConnection(HTTP2Connection):
         self._h2.send_headers(stream_id, headers, end_stream=end_stream)
         self._flush()
 
-        return stream_id
+        stream = self._create_stream(stream_id)
+        return stream.id
 
     # Receive
 
-    async def get_pushed_stream_ids(self, parent_stream_id):
+    async def get_pushed_stream_ids(self, parent_stream_id: int) -> List[int]:
         """Return a list of all streams pushed by the remote peer that are
         children of the specified stream. If no streams have been pushed when
         this method is called, waits until at least one stream has been pushed.
         """
         if parent_stream_id not in self._streams:
-            raise UnknownStreamError(
+            logger.error(
                 f'Parent stream {parent_stream_id} unknown to this connection'
             )
+            raise NoSuchStreamError(parent_stream_id)
         parent = self._get_stream(parent_stream_id)
 
         await parent.pushed_streams_available.wait()
-        pushed_streams = self._pushed_streams[parent.id]
+        pushed_streams_ids = self._pushed_stream_ids[parent.id]
 
-        stream_ids = []
-        if len(pushed_streams) > 0:
-            stream_ids.extend(pushed_streams)
-            pushed_streams.clear()
+        stream_ids: List[int] = []
+        if len(pushed_streams_ids) > 0:
+            stream_ids.extend(pushed_streams_ids)
+            pushed_streams_ids.clear()
             parent.pushed_streams_available.clear()
 
         return stream_ids
